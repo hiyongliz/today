@@ -1,0 +1,5 @@
+#!/bin/bash
+
+dir="/Users/lazy/i/$(date +%Y-%m-%d)"
+mkdir -p "$dir"
+cd "$dir" && exec $SHELL
