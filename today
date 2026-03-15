@@ -1,5 +1,207 @@
 #!/bin/bash
 
-dir="/Users/lazy/i/$(date +%Y-%m-%d)"
+BASE_DIR="$HOME/daily"
+VAULT_NAME="daily"
+
+usage() {
+  echo "Usage: today [offset] [options]"
+  echo ""
+  echo "  today                进入今天的目录"
+  echo "  today -1             进入昨天的目录"
+  echo "  today +3             进入3天后的目录"
+  echo "  today -d 2026/01/15  进入指定日期的目录"
+  echo "  today -l             列出已有的日期目录"
+  echo "  today -p             只打印路径，不进入"
+  echo "  today -c             用 VS Code/Cursor 打开"
+  echo "  today -f             用 Finder 打开"
+  echo "  today -s             查看当天目录的文件概况"
+  echo "  today -w             显示本周各天概况"
+  echo "  today --clean        清理空的日期目录"
+  echo "  today -o             同时打开 Obsidian"
+}
+
+get_date_path() {
+  date -v"${1:+${1}}d" +%Y/%m/%d 2>/dev/null || date +%Y/%m/%d
+}
+
+create_note() {
+  local dir="$1" dp="$2"
+  local note="$dir/today.md"
+  [[ -f "$note" ]] && return
+
+  cat > "$note" <<EOF
+# ${dp//\//-}
+
+## TODO
+
+- [ ]
+
+## Notes
+
+EOF
+}
+
+show_status() {
+  local target="$1"
+  if [[ ! -d "$target" ]]; then
+    echo "目录不存在: $target"
+    return 1
+  fi
+  local count
+  count="$(find "$target" -type f | wc -l | tr -d ' ')"
+  echo "📁 $target"
+  echo "   文件数: $count"
+  if [[ "$count" -gt 0 ]]; then
+    echo "   文件列表:"
+    find "$target" -type f -exec basename {} \; | sort | sed 's/^/     /'
+  fi
+}
+
+show_week() {
+  echo "本周概况:"
+  echo ""
+  local dow
+  dow="$(date +%u)"
+  for i in $(seq $((1 - dow)) $((7 - dow))); do
+    local dp d marker count
+    dp="$(get_date_path "$i")"
+    marker=" "
+    [[ "$i" -eq 0 ]] && marker=">"
+    d="$BASE_DIR/$dp"
+    if [[ -d "$d" ]]; then
+      count="$(find "$d" -type f | wc -l | tr -d ' ')"
+      printf " %s %s  %s 个文件\n" "$marker" "$dp" "$count"
+    else
+      printf " %s %s  -\n" "$marker" "$dp"
+    fi
+  done
+}
+
+do_clean() {
+  local removed=0
+  while IFS= read -r d; do
+    if [[ -z "$(ls -A "$d")" ]]; then
+      rmdir "$d" 2>/dev/null && removed=$((removed + 1))
+    fi
+  done < <(find "$BASE_DIR" -maxdepth 3 -mindepth 3 -type d -path "*/[0-9][0-9][0-9][0-9]/[0-9][0-9]/[0-9][0-9]" 2>/dev/null | sort)
+
+  # 清理空的月份和年份目录
+  find "$BASE_DIR" -maxdepth 2 -mindepth 1 -type d -empty -delete 2>/dev/null
+
+  echo "已清理 $removed 个空目录"
+}
+
+# 解析参数
+print_only=false
+open_obsidian=false
+open_code=false
+open_finder=false
+show_stat=false
+offset=0
+specific_date=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    -l)
+      find "$BASE_DIR" -maxdepth 3 -mindepth 3 -type d -path "*/[0-9][0-9][0-9][0-9]/[0-9][0-9]/[0-9][0-9]" 2>/dev/null | sort
+      exit 0
+      ;;
+    -w)
+      show_week
+      exit 0
+      ;;
+    --clean)
+      do_clean
+      exit 0
+      ;;
+    -p)
+      print_only=true
+      ;;
+    -c)
+      open_code=true
+      ;;
+    -f)
+      open_finder=true
+      ;;
+    -s)
+      show_stat=true
+      ;;
+    -d)
+      shift
+      if [[ -z "$1" || ! "$1" =~ ^[0-9]{4}/[0-9]{2}/[0-9]{2}$ ]]; then
+        echo "错误: -d 需要 YYYY/MM/DD 格式的日期"
+        exit 1
+      fi
+      if ! date -j -f "%Y/%m/%d" "$1" +%s &>/dev/null; then
+        echo "错误: 无效日期 '$1'"
+        exit 1
+      fi
+      specific_date="$1"
+      ;;
+    -o)
+      open_obsidian=true
+      ;;
+    *)
+      if [[ "$1" =~ ^[+-]?[0-9]+$ ]]; then
+        offset="$1"
+      else
+        echo "错误: 无效参数 '$1'"
+        usage
+        exit 1
+      fi
+      ;;
+  esac
+  shift
+done
+
+# 计算日期路径
+if [[ -n "$specific_date" ]]; then
+  date_path="$specific_date"
+else
+  date_path="$(get_date_path "$offset")"
+fi
+dir="$BASE_DIR/$date_path"
+
+# -s 和 -p 不创建目录
+if [[ "$show_stat" == true ]]; then
+  show_status "$dir"
+  exit 0
+fi
+
+if [[ "$print_only" == true ]]; then
+  echo "$dir"
+  exit 0
+fi
+
 mkdir -p "$dir"
-cd "$dir" && exec $SHELL
+
+# 创建 today.md
+create_note "$dir" "$date_path"
+
+# 打开 Obsidian
+if [[ "$open_obsidian" == true ]]; then
+  open "obsidian://open?vault=${VAULT_NAME}&file=${date_path}/today"
+fi
+
+# 用 VS Code/Cursor 打开
+if [[ "$open_code" == true ]]; then
+  if command -v cursor &>/dev/null; then
+    cursor "$dir"
+  elif command -v code &>/dev/null; then
+    code "$dir"
+  else
+    echo "未找到 VS Code 或 Cursor"
+  fi
+fi
+
+# 用 Finder 打开
+if [[ "$open_finder" == true ]]; then
+  open "$dir"
+fi
+
+# 进入目录
+cd "$dir" && exec "$SHELL"
